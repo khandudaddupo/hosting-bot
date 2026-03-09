@@ -18,6 +18,10 @@ const OWNER_IDS = (process.env.OWNER_IDS || "")
 const PRIMARY_ADMIN_ID = OWNER_IDS[0] || 0;
 const POLL_INTERVAL = 2; // seconds
 const MAX_SSE_RETRIES = 5;
+
+// -- VERCEL STATELESS FIX (Optional Hardcoded Values) --
+const SINGLE_FIREBASE_URL = process.env.FIREBASE_URL || "";
+const SINGLE_ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID ? parseInt(process.env.ADMIN_CHAT_ID, 10) : PRIMARY_ADMIN_ID;
 // ----------------------------------------
 
 let OFFSET = null;
@@ -238,33 +242,29 @@ async function notifyUserOwner(chatId, fields) {
   await sendMsg(OWNER_IDS, text);
 }
 
-// ---------- POLLING LOOP ----------
-function pollLoop(chatId, baseUrl) {
+// ---------- FIREBASE POLLING LOGIC (Triggered by Cron) ----------
+async function pollFirebaseIteration(chatId, baseUrl) {
   let url = baseUrl.replace(/\/+$/, "");
   if (!url.endsWith(".json")) url = url + "/.json";
+  
   if (!seenHashes[chatId]) seenHashes[chatId] = new Set();
   const seen = seenHashes[chatId];
-  sendMsg(chatId, `📡 Polling started (every ${POLL_INTERVAL}s).`);
 
-  const intervalId = setInterval(async () => {
-    if (firebaseUrls[chatId] !== baseUrl) {
-      clearInterval(intervalId);
-      sendMsg(chatId, "⛔ Polling stopped.");
-      return;
-    }
-    const snap = await httpGetJson(url);
-    if (!snap) return;
-    const nodes = findSmsNodes(snap, "");
-    for (const [path, obj] of nodes) {
-      const h = computeHash(path, obj);
-      if (seen.has(h)) continue;
-      seen.add(h);
-      const fields = extractFields(obj);
-      await notifyUserOwner(chatId, fields);
-    }
-  }, POLL_INTERVAL * 1000);
-
-  return intervalId;
+  if (firebaseUrls[chatId] !== baseUrl) {
+    return; // Monitoring stopped for this url
+  }
+  
+  const snap = await httpGetJson(url);
+  if (!snap) return;
+  
+  const nodes = findSmsNodes(snap, "");
+  for (const [path, obj] of nodes) {
+    const h = computeHash(path, obj);
+    if (seen.has(h)) continue;
+    seen.add(h);
+    const fields = extractFields(obj);
+    await notifyUserOwner(chatId, fields);
+  }
 }
 
 // ---------- START / STOP ----------
@@ -273,22 +273,19 @@ async function startWatcher(chatId, baseUrl) {
   seenHashes[chatId] = new Set();
   const jsonUrl = normalizeJsonUrl(baseUrl);
   const snap = await httpGetJson(jsonUrl);
+  
+  // Initially populate seenHashes so we don't alert old messages
   if (snap) {
     for (const [p, o] of findSmsNodes(snap, "")) {
       seenHashes[chatId].add(computeHash(p, o));
     }
   }
-  const intervalId = pollLoop(chatId, baseUrl);
-  watcherIntervals[chatId] = intervalId;
+  
   await sendMsg(chatId, "✅ Monitoring started. You will receive alerts too.");
   refreshFirebaseCache(chatId);
 }
 
 function stopWatcher(chatId) {
-  if (watcherIntervals[chatId]) {
-    clearInterval(watcherIntervals[chatId]);
-    delete watcherIntervals[chatId];
-  }
   delete firebaseUrls[chatId];
   delete seenHashes[chatId];
   sendMsg(chatId, "🛑 Monitoring stopped.");
@@ -888,6 +885,37 @@ app.get("/set_webhook", async (req, res) => {
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// CRON Endpoint for Vercel: Ping this URL every 1 minute via cron-job.org
+app.get("/cron", async (req, res) => {
+  try {
+    let polledCount = 0;
+    
+    // Approach 1: Stateless check (Using Hardcoded Firebase URL)
+    if (SINGLE_FIREBASE_URL && SINGLE_ADMIN_CHAT_ID) {
+      await pollFirebaseIteration(SINGLE_ADMIN_CHAT_ID, SINGLE_FIREBASE_URL);
+      polledCount++;
+    }
+
+    // Approach 2: Stateful check (In-memory users)
+    const activeChats = Object.keys(firebaseUrls);
+    for (const chatId of activeChats) {
+      // Don't double-poll if the hardcoded match is also in memory
+      if (SINGLE_ADMIN_CHAT_ID == chatId && SINGLE_FIREBASE_URL == firebaseUrls[chatId]) continue;
+      
+      await pollFirebaseIteration(chatId, firebaseUrls[chatId]);
+      polledCount++;
+    }
+
+    if (polledCount === 0) {
+      return res.status(200).send("Cron executed: No active Firebase monitors.");
+    }
+
+    res.status(200).send(`Cron executed: Polled ${polledCount} Firebase databases.`);
+  } catch (err) {
+    res.status(500).send(`Cron error: ${err.message}`);
   }
 });
 
