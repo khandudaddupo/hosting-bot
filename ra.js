@@ -878,3 +878,5 @@ process.on("SIGINT", () => {
   console.log("Shutting down.");
   process.exit(0);
 });
+
+module.exports = app;
