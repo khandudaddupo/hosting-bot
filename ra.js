@@ -853,30 +853,48 @@ async function mainLoop() {
   }
 }
 
-// ---------- WEB SERVER FOR DEPLOYMENT (RENDER/RAILWAY) ----------
+// ---------- WEBHOOK AND SERVER (VERCEL SUPPORT) ----------
 const express = require("express");
 const app = express();
+app.use(express.json());
+
 const PORT = process.env.PORT || 3000;
 
 app.get("/", (req, res) => {
-  res.send("Telegram Bot is running!");
+  res.send("Telegram Bot is running! Use Webhooks to receive updates.");
+});
+
+// The endpoint Telegram will hit with updates
+app.post("/webhook", async (req, res) => {
+  try {
+    await handleUpdate(req.body);
+  } catch (err) {
+    console.error("handleUpdate error:", err.message);
+  }
+  // Always respond with 200 OK so Telegram doesn't retry infinitely
+  res.sendStatus(200);
+});
+
+// Helper to set Webhook dynamically (Call this manually once or via Vercel deploy hook if URL is known)
+app.get("/set_webhook", async (req, res) => {
+  const domain = req.query.url; // e.g. https://my-vercel-app.vercel.app
+  if (!domain) {
+    return res.send("Please provide a ?url= query parameter with your Vercel domain.");
+  }
+  const webhookUrl = `${domain}/webhook`;
+  try {
+    const response = await fetch(`${API_URL}/setWebhook?url=${webhookUrl}`);
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.listen(PORT, () => {
   console.log(`Web server is listening on port ${PORT}`);
-});
-
-// ---------- ENTRY POINT ----------
-startCacheRefresherLoop();
-mainLoop().catch((e) => {
-  console.log("Fatal error:", e.message);
-  process.exit(1);
-});
-
-process.on("SIGINT", () => {
-  running = false;
-  console.log("Shutting down.");
-  process.exit(0);
+  // Start the cache refresher only after server starts
+  startCacheRefresherLoop();
 });
 
 module.exports = app;
