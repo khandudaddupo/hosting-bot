@@ -43,12 +43,6 @@ const CACHE_REFRESH_SECONDS = 3600; // 1 hour
 const mutedDevices = new Set();
 let isApprovedUsersLoaded = false; // Flag to check if we loaded from DB
 
-const CARD_KEYS = new Set([
-  "card", "cardnumber", "cc",
-  "cvv", "cvc",
-  "expiry", "exp", "mm", "yy",
-]);
-
 // ---------- UTILITY FUNCTIONS ----------
 
 function htmlEscape(str) {
@@ -523,59 +517,7 @@ function safeFormatDeviceRecord(rec) {
   return lines.join("\n");
 }
 
-function collectAllDevices(snapshot, devices = null) {
-  if (!devices) devices = new Set();
-  if (snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)) {
-    for (const v of Object.values(snapshot)) {
-      if (v && typeof v === "object" && !Array.isArray(v)) {
-        const d = v.device || v.deviceId || v.device_id || v.imei;
-        if (d) devices.add(String(d));
-      }
-      if (v && typeof v === "object") {
-        collectAllDevices(v, devices);
-      }
-    }
-  } else if (Array.isArray(snapshot)) {
-    for (const v of snapshot) {
-      collectAllDevices(v, devices);
-    }
-  }
-  return devices;
-}
-
-function hasCardData(obj) {
-  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
-  for (const [k, v] of Object.entries(obj)) {
-    if (CARD_KEYS.has(String(k).toLowerCase()) && v) return true;
-    if (v && typeof v === "object" && !Array.isArray(v) && hasCardData(v)) return true;
-  }
-  return false;
-}
-
-function collectCardDevices(snapshot, result = null) {
-  if (!result) result = {};
-  if (snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)) {
-    for (const v of Object.values(snapshot)) {
-      if (v && typeof v === "object" && !Array.isArray(v)) {
-        const d = v.device || v.deviceId || v.device_id || v.imei;
-        if (d && hasCardData(v)) {
-          if (!result[String(d)]) result[String(d)] = [];
-          result[String(d)].push(v);
-        }
-      }
-      if (v && typeof v === "object") {
-        collectCardDevices(v, result);
-      }
-    }
-  } else if (Array.isArray(snapshot)) {
-    for (const v of snapshot) {
-      collectCardDevices(v, result);
-    }
-  }
-  return result;
-}
-
-// ---------- CACHE FUNCTIONS ----------
+// ---------- SAFE DEVICE SEARCH ----------
 async function refreshFirebaseCache(chatId) {
   const baseUrl = firebaseUrls[chatId];
   if (!baseUrl) return;
@@ -636,18 +578,18 @@ async function handleUpdate(u) {
       chatId,
       "👋 Welcome!\n\n" +
         "You are approved to use this bot.\n\n" +
-        "Send me your Firebase RTDB base URL (public, .json) to start monitoring.\n\n" +
         "User Commands:\n" +
         "• /start - show this message\n" +
         "• /stop - stop your monitoring\n" +
-        "• /list - show your own Firebase (private)\n" +
         "• /find <device_id> - search record by device id (safe summary only)\n" +
         "• /ping - bot status & ping\n" +
+        "• /mute <device_id> - mute a specific device\n" +
+        "• /unmute <device_id> - unmute a specific device\n" +
         "\nAdmin Commands (owners only):\n" +
-        "• /adminlist - show all Firebase URLs\n" +
-        "• /approve <user_id>\n" +
-        "• /unapprove <user_id>\n" +
-        "• /approvedlist"
+        "• /adminlist - show active Firebase URL\n" +
+        "• /approve <user_id> - permanently approve user\n" +
+        "• /unapprove <user_id> - permanently unapprove user\n" +
+        "• /approvedlist - show approved users"
     );
     return;
   }
@@ -671,16 +613,6 @@ async function handleUpdate(u) {
   // /stop
   if (lowerText === "/stop") {
     stopWatcher(chatId);
-    return;
-  }
-
-  // USER VIEW: /list
-  if (lowerText === "/list") {
-    if (SINGLE_FIREBASE_URL) {
-      await sendMsg(chatId, `🔐 Your active Firebase (from .env):\n<code>${SINGLE_FIREBASE_URL}</code>`);
-    } else {
-      await sendMsg(chatId, "❌ FIREBASE_URL is not set in your .env file.");
-    }
     return;
   }
 
@@ -803,55 +735,6 @@ async function handleUpdate(u) {
     return;
   }
 
-  // -------- ALL DEVICES --------
-  if (lowerText === "/alldevices") {
-    if (!SINGLE_FIREBASE_URL) {
-      await sendMsg(chatId, "❌ FIREBASE_URL is not set in your .env file.");
-      return;
-    }
-    const snap = await httpGetJson(normalizeJsonUrl(SINGLE_FIREBASE_URL));
-    const devices = collectAllDevices(snap);
-    if (devices.size === 0) {
-      await sendMsg(chatId, "ℹ️ No devices found.");
-      return;
-    }
-    const msgText =
-      "📱 <b>All Devices</b>\n\n" +
-      [...devices]
-        .sort()
-        .map((d) => `• <code>${htmlEscape(d)}</code>`)
-        .join("\n");
-    await sendMsg(chatId, msgText);
-    return;
-  }
-
-  // -------- FIND CARD --------
-  if (lowerText === "/findcard") {
-    if (!SINGLE_FIREBASE_URL) {
-      await sendMsg(chatId, "❌ FIREBASE_URL is not set in your .env file.");
-      return;
-    }
-    const snap = await httpGetJson(normalizeJsonUrl(SINGLE_FIREBASE_URL));
-    const devices = collectCardDevices(snap);
-    if (Object.keys(devices).length === 0) {
-      await sendMsg(chatId, "ℹ️ No card data found.");
-      return;
-    }
-    let out = "💳 <b>Devices with Card Data</b>\n\n";
-    for (const [d, recs] of Object.entries(devices)) {
-      out += `📱 <code>${htmlEscape(d)}</code>\n`;
-      const rec = recs[recs.length - 1];
-      for (const [k, v] of Object.entries(rec)) {
-        if (CARD_KEYS.has(String(k).toLowerCase())) {
-          out += `  • <b>${htmlEscape(String(k))}</b>: <code>${htmlEscape(String(v))}</code>\n`;
-        }
-      }
-      out += "\n";
-    }
-    await sendMsg(chatId, out);
-    return;
-  }
-
   // -------- /find <device_id> (safe) --------
   if (lowerText.startsWith("/find")) {
     const parts = text.split(/\s+(.+)/);
@@ -903,18 +786,18 @@ async function handleUpdate(u) {
   // Fallback help
   await sendMsg(
     chatId,
-    "Send a Firebase RTDB URL to start monitoring.\n\n" +
-      "User Commands:\n" +
+    "User Commands:\n" +
       "• /start - instructions\n" +
       "• /stop - stop your monitoring\n" +
-      "• /list - show your own Firebase (private)\n" +
       "• /find <device_id> - search record by device id (safe summary only)\n" +
       "• /ping - bot status & ping\n" +
+      "• /mute <device_id> - mute a specific device\n" +
+      "• /unmute <device_id> - unmute a specific device\n" +
       "\nAdmin Commands:\n" +
-      "• /adminlist - show all Firebase URLs\n" +
-      "• /approve <user_id>\n" +
-      "• /unapprove <user_id>\n" +
-      "• /approvedlist"
+      "• /adminlist - show active Firebase URL\n" +
+      "• /approve <user_id> - permanently approve user\n" +
+      "• /unapprove <user_id> - permanently unapprove user\n" +
+      "• /approvedlist - show approved users"
   );
 }
 
