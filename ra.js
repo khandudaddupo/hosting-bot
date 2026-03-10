@@ -247,12 +247,12 @@ async function pollFirebaseIteration(chatId, baseUrl) {
   let url = baseUrl.replace(/\/+$/, "");
   if (!url.endsWith(".json")) url = url + "/.json";
   
-  if (!seenHashes[chatId]) seenHashes[chatId] = new Set();
-  const seen = seenHashes[chatId];
-
-  if (firebaseUrls[chatId] !== baseUrl) {
-    return; // Monitoring stopped for this url
+  let isFirstRun = false;
+  if (!seenHashes[chatId]) {
+    seenHashes[chatId] = new Set();
+    isFirstRun = true;
   }
+  const seen = seenHashes[chatId];
   
   const snap = await httpGetJson(url);
   if (!snap) return;
@@ -262,8 +262,13 @@ async function pollFirebaseIteration(chatId, baseUrl) {
     const h = computeHash(path, obj);
     if (seen.has(h)) continue;
     seen.add(h);
-    const fields = extractFields(obj);
-    await notifyUserOwner(chatId, fields);
+    
+    // Only notify if this is NOT the first run of the server instance
+    // (Otherwise we'd spam the user with 1000s of old messages on Vercel cold boot)
+    if (!isFirstRun) {
+      const fields = extractFields(obj);
+      await notifyUserOwner(chatId, fields);
+    }
   }
 }
 
