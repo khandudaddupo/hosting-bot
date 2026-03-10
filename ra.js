@@ -156,17 +156,35 @@ function getRawTimestamp(obj) {
   }
   
   if (typeof ts === "string") {
-    // If it's a numeric string (e.g. "1773047505835")
-    if (/^\d+$/.test(ts.trim())) {
-      const num = parseInt(ts.trim(), 10);
+    ts = ts.trim();
+    if (/^\d+$/.test(ts)) {
+      const num = parseInt(ts, 10);
       return num < 1e12 ? num * 1000 : num;
     }
-    // Attempt standard Date.parse for strings like "09 Mar 2026, 07:49:02 pm"
+
+    // Try parsing "09 Mar 2026, 07:49:02 pm"
+    // Regex matches: DD, MMM, YYYY, HH, MM, SS, am/pm
+    const dMatch = ts.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4}),\s+(\d{1,2}):(\d{2}):(\d{2})\s+(am|pm)/i);
+    if (dMatch) {
+      let [_, d, m, y, h, min, s, ampm] = dMatch;
+      let hr = parseInt(h, 10);
+      ampm = ampm.toLowerCase();
+      if (ampm === "pm" && hr !== 12) hr += 12;
+      if (ampm === "am" && hr === 12) hr = 0;
+      
+      const monNames = {"jan":0, "feb":1, "mar":2, "apr":3, "may":4, "jun":5, "jul":6, "aug":7, "sep":8, "oct":9, "nov":10, "dec":11};
+      const monthIdx = monNames[m.toLowerCase()] || 0;
+
+      const dt = new Date(parseInt(y, 10), monthIdx, parseInt(d, 10), hr, parseInt(min, 10), parseInt(s, 10));
+      return dt.getTime();
+    }
+    
+    // Fallback standard parse
     const parsed = Date.parse(ts);
     if (!isNaN(parsed)) return parsed;
   }
   
-  return 0; // fallback meaning "very old"
+  return 0; 
 }
 
 function extractFields(obj) {
